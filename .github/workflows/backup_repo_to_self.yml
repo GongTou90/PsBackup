@@ -1,0 +1,48 @@
+name: Backup External Repo Source Code
+
+on:
+  schedule:
+    - cron: '0 2 * * *'          # 每天2点，按需调整
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout 当前仓库(main)用于保存备份
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # 2. 克隆目标仓库
+      - name: Clone target repo
+        run: |
+          git clone --depth=1 https://github.com/thechosenskywalker/Pulsarv2.git
+
+      # 3. 打包并以时间戳命名，存放在 backups 目录
+      - name: Archive with timestamp
+        id: archive
+        run: |
+          mkdir -p backups
+          NOW=$(date +'%Y%m%d_%H%M%S')
+          ARCHIVE=target-repo-$NOW.tar.gz
+          tar -czf $ARCHIVE target-repo
+          mv $ARCHIVE backups/
+          echo "archive_name=$ARCHIVE" >> $GITHUB_OUTPUT
+
+      # 4. 配置 Git 身份
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 5. Commit & push 新备份到仓库
+      - name: Commit & push backup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git checkout main
+          git pull origin main
+          git add backups/
+          git commit -m "backup: ${{ steps.archive.outputs.archive_name }}" || echo "No changes to commit"
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} main
