@@ -1,4 +1,4 @@
-name: Backup Pulsarv2 Source Code (Direct Zip)
+name: Conditional Backup Pulsarv2 Source Code (Direct Zip)
 
 on:
   schedule:
@@ -9,32 +9,67 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      # 检出自身仓库，准备保存文件
+      # 检出自身仓库
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # 下载 Pulsarv2 源码 zip
-      - name: Download Pulsarv2 main.zip
+      # 下载最新 Pulsarv2 源码包
+      - name: Download latest Pulsarv2 main.zip
         run: |
           mkdir -p backups
           NOW=$(date +'%Y%m%d_%H%M%S')
           ZIP_FILE="Pulsarv2-${NOW}.zip"
-          curl -L -o "backups/$ZIP_FILE" "https://github.com/thechosenskywalker/Pulsarv2/archive/refs/heads/main.zip"
+          curl -L -o "$ZIP_FILE" "https://github.com/thechosenskywalker/Pulsarv2/archive/refs/heads/main.zip"
 
-      # 配置 Git 用户
+      # 计算新下载文件 hash
+      - name: Compute new zip hash
+        id: newhash
+        run: |
+          HASH=$(sha256sum Pulsarv2-*.zip | awk '{print $1}')
+          echo "ziphash=$HASH" >> $GITHUB_OUTPUT
+
+      # 获取上一次备份的 hash（如果有的话）
+      - name: Compute previous backup hash (if exists)
+        id: prevhash
+        run: |
+          cd backups
+          LAST_ZIP=$(ls -1t Pulsarv2-*.zip 2>/dev/null | head -n1 || true)
+          if [ -n "$LAST_ZIP" ]; then
+            PREV_HASH=$(sha256sum "$LAST_ZIP" | awk '{print $1}')
+            echo "prevhash=$PREV_HASH" >> $GITHUB_OUTPUT
+          else
+            echo "prevhash=" >> $GITHUB_OUTPUT
+          fi
+          cd ..
+
+      # 判断是否有变更并备份
+      - name: Copy backup only if changed
+        run: |
+          NEWHASH="${{ steps.newhash.outputs.ziphash }}"
+          PREVHASH="${{ steps.prevhash.outputs.prevhash }}"
+          if [ "$NEWHASH" != "$PREVHASH" ]; then
+            mv Pulsarv2-*.zip backups/
+            echo "changed=1" >> $GITHUB_ENV
+          else
+            echo "No change in source, skip backup."
+            echo "changed=0" >> $GITHUB_ENV
+          fi
+
+      # 配置 Git 用户信息
       - name: Set up Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 提交并推送备份
-      - name: Commit & push backup
+      # 仅有变更时提交并推送
+      - name: Commit & push backup if changed
+        if: env.changed == '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git checkout main
           git pull origin main
           git add backups/
-          git commit -m "backup: direct Pulsarv2 zip at $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          git commit -m "backup: Pulsarv2 zip changed at $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
           git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} main
