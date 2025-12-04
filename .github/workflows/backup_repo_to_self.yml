@@ -2,7 +2,7 @@ name: Backup Pulsarv2 Source Code (Zip Encrypted)
 
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 * * * *'       # 每小时的第0分钟触发
   workflow_dispatch:
 
 jobs:
