@@ -1,4 +1,4 @@
-name: Conditional Backup Pulsarv2 Source Code (Direct Zip)
+name: Conditional Backup Pulsarv2 Source Code With Log & Trigger
 
 on:
   schedule:
@@ -9,27 +9,26 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      # 检出自身仓库
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      # 下载最新 Pulsarv2 源码包
       - name: Download latest Pulsarv2 main.zip
         run: |
           mkdir -p backups
           NOW=$(date +'%Y%m%d_%H%M%S')
           ZIP_FILE="Pulsarv2-${NOW}.zip"
           curl -L -o "$ZIP_FILE" "https://github.com/thechosenskywalker/Pulsarv2/archive/refs/heads/main.zip"
+          echo "NOW=$NOW" >> $GITHUB_ENV
+          echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
 
-      # 计算新下载文件 hash
       - name: Compute new zip hash
         id: newhash
         run: |
-          HASH=$(sha256sum Pulsarv2-*.zip | awk '{print $1}')
+          HASH=$(sha256sum $ZIP_FILE | awk '{print $1}')
           echo "ziphash=$HASH" >> $GITHUB_OUTPUT
+          echo "ZIP_HASH=$HASH" >> $GITHUB_ENV
 
-      # 获取上一次备份的 hash（如果有的话）
       - name: Compute previous backup hash (if exists)
         id: prevhash
         run: |
@@ -38,38 +37,59 @@ jobs:
           if [ -n "$LAST_ZIP" ]; then
             PREV_HASH=$(sha256sum "$LAST_ZIP" | awk '{print $1}')
             echo "prevhash=$PREV_HASH" >> $GITHUB_OUTPUT
+            echo "PREV_ZIP=$LAST_ZIP" >> $GITHUB_ENV
           else
             echo "prevhash=" >> $GITHUB_OUTPUT
+            echo "PREV_ZIP=" >> $GITHUB_ENV
           fi
           cd ..
 
-      # 判断是否有变更并备份
       - name: Copy backup only if changed
         run: |
           NEWHASH="${{ steps.newhash.outputs.ziphash }}"
           PREVHASH="${{ steps.prevhash.outputs.prevhash }}"
           if [ "$NEWHASH" != "$PREVHASH" ]; then
-            mv Pulsarv2-*.zip backups/
+            mv "$ZIP_FILE" backups/
             echo "changed=1" >> $GITHUB_ENV
           else
             echo "No change in source, skip backup."
             echo "changed=0" >> $GITHUB_ENV
           fi
 
-      # 配置 Git 用户信息
+      - name: Append to backup log
+        run: |
+          mkdir -p backups
+          TIME_STR=$(date '+%Y-%m-%d %H:%M:%S')
+          # 判断 trigger 方式
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TRIGGER="manual"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            TRIGGER="scheduled"
+          else
+            TRIGGER="${{ github.event_name }}"
+          fi
+
+          if [ "$changed" = "1" ]; then
+            echo "[$TIME_STR] [$TRIGGER] changed, $ZIP_FILE (hash: $ZIP_HASH)" >> backups/backup-log.txt
+          else
+            echo "[$TIME_STR] [$TRIGGER] no change, skip backup." >> backups/backup-log.txt
+          fi
+        env:
+          changed: ${{ env.changed }}
+          ZIP_FILE: ${{ env.ZIP_FILE }}
+          ZIP_HASH: ${{ env.ZIP_HASH }}
+
       - name: Set up Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # 仅有变更时提交并推送
-      - name: Commit & push backup if changed
-        if: env.changed == '1'
+      - name: Commit & push backup/log
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git checkout main
           git pull origin main
           git add backups/
-          git commit -m "backup: Pulsarv2 zip changed at $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          git commit -m "backup(log): update at $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
           git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} main
